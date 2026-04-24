@@ -11,263 +11,135 @@ Run from the repo root:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
 from pathlib import Path
+import sys
+
+OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+os.environ.setdefault("MPLCONFIGDIR", str(OUTPUT_DIR / ".mplconfig"))
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy import ndimage
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from momp.metrics.cra import CraResult, cra_decomposition, shift_field
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+RAIN_LEVELS = [1.0, 12.7, 25.4]
+OBS_COLOR = "#202020"
+FCST_COLOR = "#1f77b4"
+SHIFTED_COLOR = "#d62728"
 
 
-@dataclass(frozen=True)
-class CraResult:
-    case: str
-    imposed_forecast_dx: int
-    imposed_forecast_dy: int
-    corrective_shift_dx: int
-    corrective_shift_dy: int
-    diagnosed_forecast_error_dx: int
-    diagnosed_forecast_error_dy: int
-    n_obs_objects: int
-    n_fcst_objects: int
-    mse_total: float
-    mse_shifted: float
-    mse_displacement: float
-    mse_volume: float
-    mse_pattern: float
-    pct_displacement: float
-    pct_volume: float
-    pct_pattern: float
-    mean_obs: float
-    mean_fcst_shifted: float
-    peak_obs: float
-    peak_fcst_shifted: float
-    spatial_corr_original: float
-    spatial_corr_shifted: float
-
-
-def make_ellipse_field(
+def make_paper_ellipse_field(
     shape: tuple[int, int],
     *,
     center: tuple[float, float],
-    radii: tuple[float, float],
-    amplitude: float,
-    core_amplitude: float | None = None,
-    core_radii: tuple[float, float] | None = None,
-    angle_degrees: float = 0.0,
+    dimensions: tuple[float, float],
+    intensity: float = 12.7,
+    core_dimensions: tuple[float, float] = (20.0, 80.0),
+    core_intensity: float = 25.4,
+    core_offset_x: float = 10.0,
 ) -> np.ndarray:
-    """Create a smooth-ish synthetic rain object with an optional heavy core."""
+    """
+    Create the idealized geometric rain field from Ebert and Gallus (2009).
+
+    The paper's observed field is a north-south ellipse of dimension
+    50 x 200 grid points at 12.7 mm h-1 with an embedded 20 x 80 grid-point
+    heavy-rain ellipse at 25.4 mm h-1, centered 10 points east of the parent.
+    Dimensions are passed as (east-west width, north-south height).
+    """
     y, x = np.indices(shape, dtype=float)
     cy, cx = center
-    ry, rx = radii
-    theta = np.deg2rad(angle_degrees)
+    width, height = dimensions
+    core_width, core_height = core_dimensions
 
-    x0 = x - cx
-    y0 = y - cy
-    x_rot = x0 * np.cos(theta) + y0 * np.sin(theta)
-    y_rot = -x0 * np.sin(theta) + y0 * np.cos(theta)
+    outer = ((x - cx) / (width / 2.0)) ** 2 + ((y - cy) / (height / 2.0)) ** 2 <= 1.0
+    core_cx = cx + core_offset_x
+    core = ((x - core_cx) / (core_width / 2.0)) ** 2 + (
+        (y - cy) / (core_height / 2.0)
+    ) ** 2 <= 1.0
 
-    ellipse = (x_rot / rx) ** 2 + (y_rot / ry) ** 2 <= 1.0
     field = np.zeros(shape, dtype=float)
-
-    # Taper the object slightly so the pattern has more structure than a block.
-    radial = np.sqrt((x_rot / rx) ** 2 + (y_rot / ry) ** 2)
-    field[ellipse] = amplitude * (1.15 - 0.35 * radial[ellipse])
-
-    if core_amplitude is not None and core_radii is not None:
-        cry, crx = core_radii
-        core = (x_rot / crx) ** 2 + (y_rot / cry) ** 2 <= 1.0
-        core_radial = np.sqrt((x_rot / crx) ** 2 + (y_rot / cry) ** 2)
-        field[core] += core_amplitude * (1.1 - 0.25 * core_radial[core])
-
+    field[outer] = intensity
+    field[core] = core_intensity
     return field
 
 
-def shift_field(field: np.ndarray, dy: int, dx: int, fill: float = 0.0) -> np.ndarray:
-    """Translate a 2-D field by integer grid cells without wraparound."""
-    shifted = np.full_like(field, fill, dtype=float)
-    ny, nx = field.shape
-
-    src_y0 = max(0, -dy)
-    src_y1 = min(ny, ny - dy)
-    src_x0 = max(0, -dx)
-    src_x1 = min(nx, nx - dx)
-
-    dst_y0 = max(0, dy)
-    dst_y1 = min(ny, ny + dy)
-    dst_x0 = max(0, dx)
-    dst_x1 = min(nx, nx + dx)
-
-    if src_y0 < src_y1 and src_x0 < src_x1:
-        shifted[dst_y0:dst_y1, dst_x0:dst_x1] = field[src_y0:src_y1, src_x0:src_x1]
-
-    return shifted
-
-
-def finite_corr(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
-    """Spatial correlation over a mask; returns nan for constant fields."""
-    aa = a[mask].ravel()
-    bb = b[mask].ravel()
-    valid = np.isfinite(aa) & np.isfinite(bb)
-
-    if valid.sum() < 2:
-        return np.nan
-
-    aa = aa[valid]
-    bb = bb[valid]
-    if np.allclose(aa, aa[0]) or np.allclose(bb, bb[0]):
-        return np.nan
-
-    return float(np.corrcoef(aa, bb)[0, 1])
-
-
-def masked_mse(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
-    diff = a[mask] - b[mask]
-    return float(np.nanmean(diff**2))
-
-
-def object_count(field: np.ndarray, threshold: float) -> int:
-    _, count = ndimage.label(field >= threshold)
-    return int(count)
-
-
-def best_shift_by_mse(
-    obs: np.ndarray,
-    fcst: np.ndarray,
-    *,
-    threshold: float,
-    max_shift: int,
-) -> tuple[int, int, np.ndarray, np.ndarray, float]:
-    """
-    Find the integer forecast translation that minimizes MSE over the CRA mask.
-
-    The CRA mask is relaxed for this demo: it is the union of observed rain,
-    original forecast rain, and shifted forecast rain above threshold. This lets
-    the synthetic non-overlap case be matched, mirroring the paper's recommended
-    fix to the strict overlap requirement.
-    """
-    obs_mask = obs >= threshold
-    fcst_mask = fcst >= threshold
-    best: tuple[int, int, np.ndarray, np.ndarray, float] | None = None
-
-    for dy in range(-max_shift, max_shift + 1):
-        for dx in range(-max_shift, max_shift + 1):
-            shifted = shift_field(fcst, dy, dx)
-            shifted_mask = shifted >= threshold
-            cra_mask = obs_mask | fcst_mask | shifted_mask
-            mse = masked_mse(shifted, obs, cra_mask)
-
-            if best is None or mse < best[-1]:
-                best = (dy, dx, shifted, cra_mask, mse)
-
-    if best is None:
-        raise RuntimeError("No valid shift found")
-
-    return best
-
-
-def cra_decomposition(
-    case: str,
-    obs: np.ndarray,
-    fcst: np.ndarray,
-    *,
-    imposed_forecast_dx: int,
-    imposed_forecast_dy: int,
-    threshold: float = 1.0,
-    max_shift: int = 80,
-) -> tuple[CraResult, np.ndarray, np.ndarray]:
-    """Compute a simple CRA-style MSE decomposition for one synthetic case."""
-    dy, dx, shifted, cra_mask, mse_shifted = best_shift_by_mse(
-        obs,
-        fcst,
-        threshold=threshold,
-        max_shift=max_shift,
-    )
-
-    mse_total = masked_mse(fcst, obs, cra_mask)
-    mean_obs = float(np.nanmean(obs[cra_mask]))
-    mean_fcst_shifted = float(np.nanmean(shifted[cra_mask]))
-
-    mse_displacement = max(mse_total - mse_shifted, 0.0)
-    mse_volume = (mean_fcst_shifted - mean_obs) ** 2
-    mse_pattern = max(mse_shifted - mse_volume, 0.0)
-
-    if mse_total > 0:
-        pct_displacement = 100.0 * mse_displacement / mse_total
-        pct_volume = 100.0 * mse_volume / mse_total
-        pct_pattern = 100.0 * mse_pattern / mse_total
-    else:
-        pct_displacement = pct_volume = pct_pattern = np.nan
-
-    original_corr = finite_corr(fcst, obs, cra_mask)
-    shifted_corr = finite_corr(shifted, obs, cra_mask)
-
-    result = CraResult(
-        case=case,
-        imposed_forecast_dx=imposed_forecast_dx,
-        imposed_forecast_dy=imposed_forecast_dy,
-        corrective_shift_dx=dx,
-        corrective_shift_dy=dy,
-        diagnosed_forecast_error_dx=-dx,
-        diagnosed_forecast_error_dy=-dy,
-        n_obs_objects=object_count(obs, threshold),
-        n_fcst_objects=object_count(fcst, threshold),
-        mse_total=mse_total,
-        mse_shifted=mse_shifted,
-        mse_displacement=mse_displacement,
-        mse_volume=mse_volume,
-        mse_pattern=mse_pattern,
-        pct_displacement=pct_displacement,
-        pct_volume=pct_volume,
-        pct_pattern=pct_pattern,
-        mean_obs=mean_obs,
-        mean_fcst_shifted=mean_fcst_shifted,
-        peak_obs=float(np.nanmax(obs[cra_mask])),
-        peak_fcst_shifted=float(np.nanmax(shifted[cra_mask])),
-        spatial_corr_original=original_corr,
-        spatial_corr_shifted=shifted_corr,
-    )
-
-    return result, shifted, cra_mask
-
-
 def make_cases(shape: tuple[int, int]) -> dict[str, tuple[np.ndarray, np.ndarray, int, int]]:
-    """Return synthetic observed/forecast pairs and known forecast shifts."""
-    obs = make_ellipse_field(
+    """Return the paper's idealized geometric cases with known forecast errors."""
+    obs = make_paper_ellipse_field(
         shape,
-        center=(70, 75),
-        radii=(28, 17),
-        amplitude=7.0,
-        core_amplitude=10.0,
-        core_radii=(10, 6),
-        angle_degrees=-12,
+        center=(170, 150),
+        dimensions=(50, 200),
     )
 
     cases = {
-        "shift_only": (obs, shift_field(obs, 10, 20), 20, 10),
-        "shift_and_amplify": (obs, 1.5 * shift_field(obs, 10, 20), 20, 10),
-        "shift_and_stretch": (
+        "geom001_shift_50_east": (obs, shift_field(obs, 0, 50), 50, 0),
+        "geom003_stretched_200x200": (
             obs,
-            make_ellipse_field(
+            make_paper_ellipse_field(
                 shape,
-                center=(80, 95),
-                radii=(19, 31),
-                amplitude=7.0,
-                core_amplitude=9.0,
-                core_radii=(6, 14),
-                angle_degrees=8,
+                center=(170, 275),
+                dimensions=(200, 200),
+                core_dimensions=(80, 80),
             ),
-            20,
-            10,
+            125,
+            0,
         ),
-        "nonoverlap_shift_only": (obs, shift_field(obs, 0, 58), 58, 0),
+        "geom004_wrong_aspect_200x50": (
+            obs,
+            make_paper_ellipse_field(
+                shape,
+                center=(170, 275),
+                dimensions=(200, 50),
+                core_dimensions=(80, 20),
+            ),
+            125,
+            0,
+        ),
     }
 
     return cases
+
+
+def masked_centroid(field: np.ndarray, threshold: float) -> tuple[float, float] | None:
+    """Return x, y centroid of rain above threshold in array/display coordinates."""
+    mask = np.asarray(field) >= threshold
+    if not np.any(mask):
+        return None
+
+    y, x = np.nonzero(mask)
+    return float(x.mean()), float(y.mean())
+
+
+def add_rain_contours(
+    ax: plt.Axes,
+    data: np.ndarray,
+    *,
+    color: str,
+    linestyle: str = "-",
+    linewidth: float = 1.1,
+    alpha: float = 1.0,
+) -> None:
+    """Draw stable rain contours for the idealized two-intensity fields."""
+    levels = [level for level in RAIN_LEVELS if np.nanmin(data) < level <= np.nanmax(data)]
+    if not levels:
+        return
+
+    ax.contour(
+        data,
+        levels=levels,
+        colors=color,
+        linestyles=linestyle,
+        linewidths=linewidth,
+        alpha=alpha,
+        origin="lower",
+    )
 
 
 def plot_case(
@@ -283,40 +155,46 @@ def plot_case(
 ) -> None:
     """Save a compact visual diagnostic for one CRA case."""
     vmax = max(float(obs.max()), float(fcst.max()), float(shifted.max()))
-    fig, axes = plt.subplots(1, 4, figsize=(15, 4), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.4), constrained_layout=True)
 
     panels = [
-        ("Observed", obs),
-        ("Forecast", fcst),
-        ("Shifted forecast", shifted),
-        ("CRA mask", cra_mask.astype(float)),
+        ("Observed rain", obs),
+        ("Forecast and correction", fcst),
+        ("Best-fit overlay", shifted),
     ]
+    rain_im = None
 
     for ax, (title, data) in zip(axes, panels):
-        if title == "CRA mask":
-            im = ax.imshow(data, origin="lower", cmap="Greys", vmin=0, vmax=1)
-        else:
-            im = ax.imshow(data, origin="lower", cmap="viridis", vmin=0, vmax=vmax)
-            ax.contour(data >= threshold, levels=[0.5], colors="white", linewidths=0.9)
+        rain_im = ax.imshow(data, origin="lower", cmap="viridis", vmin=0, vmax=vmax)
+        add_rain_contours(ax, data, color="white", linewidth=0.9)
+
+        if title == "Forecast and correction":
+            add_rain_contours(ax, obs, color=OBS_COLOR, linewidth=1.2, alpha=0.85)
+            add_rain_contours(ax, fcst, color=FCST_COLOR, linestyle="--", linewidth=1.4)
+
+            centroid = masked_centroid(fcst, threshold)
+            if centroid is not None:
+                x0, y0 = centroid
+                ax.annotate(
+                    "",
+                    xy=(x0 + result.corrective_shift_dx, y0 + result.corrective_shift_dy),
+                    xytext=(x0, y0),
+                    arrowprops={"arrowstyle": "->", "lw": 2.2, "color": SHIFTED_COLOR},
+                )
+
+        if title == "Best-fit overlay":
+            add_rain_contours(ax, obs, color=OBS_COLOR, linewidth=1.2)
+            add_rain_contours(ax, shifted, color=SHIFTED_COLOR, linewidth=1.4)
 
         ax.set_title(title)
+        ax.set_aspect("equal")
         ax.set_xticks([])
         ax.set_yticks([])
 
-    axes[1].annotate(
-        "",
-        xy=(0.52, 0.56),
-        xytext=(
-            0.52 - result.corrective_shift_dx / 130,
-            0.56 - result.corrective_shift_dy / 130,
-        ),
-        xycoords="axes fraction",
-        arrowprops={"arrowstyle": "->", "lw": 2.0, "color": "crimson"},
-    )
     axes[1].text(
         0.03,
         0.97,
-        f"correction: dx={result.corrective_shift_dx}, dy={result.corrective_shift_dy}",
+        f"corrective shift: dx={result.corrective_shift_dx}, dy={result.corrective_shift_dy}",
         transform=axes[1].transAxes,
         va="top",
         ha="left",
@@ -325,11 +203,14 @@ def plot_case(
         bbox={"facecolor": "black", "alpha": 0.45, "edgecolor": "none", "pad": 3},
     )
 
-    fig.colorbar(im, ax=axes[:3], shrink=0.82, label="rain rate / accumulation")
+    if rain_im is not None:
+        fig.colorbar(rain_im, ax=axes[:3], shrink=0.82, label="rain rate (mm h-1)")
+
     fig.suptitle(
         (
-            f"{case}: displacement={result.pct_displacement:.1f}%, "
-            f"volume={result.pct_volume:.1f}%, pattern={result.pct_pattern:.1f}%"
+            f"{case}: known error dx={result.imposed_forecast_dx:g}, dy={result.imposed_forecast_dy:g}; "
+            f"diagnosed dx={result.diagnosed_forecast_error_dx}, dy={result.diagnosed_forecast_error_dy}; "
+            f"error split D/V/P={result.pct_displacement:.1f}/{result.pct_volume:.1f}/{result.pct_pattern:.1f}%"
         ),
         fontsize=12,
     )
@@ -341,8 +222,10 @@ def plot_case(
 
 def main() -> None:
     threshold = 1.0
-    max_shift = 80
-    shape = (140, 160)
+    max_shift = 180
+    dx_values = range(-180, 21)
+    dy_values = range(0, 1)
+    shape = (340, 520)
     cases = make_cases(shape)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -357,6 +240,8 @@ def main() -> None:
             imposed_forecast_dy=imposed_forecast_dy,
             threshold=threshold,
             max_shift=max_shift,
+            dx_values=dx_values,
+            dy_values=dy_values,
         )
         rows.append(result.__dict__)
         plot_case(
