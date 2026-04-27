@@ -28,6 +28,7 @@ DEMO_DIR = Path(__file__).resolve().parents[1]
 ROOT_DATA_DIR = REPO_ROOT / "data"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 os.environ.setdefault("MPLCONFIGDIR", str(OUTPUT_DIR / ".mplconfig"))
+PLOT_BACKGROUND = "#fafafa"
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -290,7 +291,8 @@ def plot_map_panel(
     if boundary is not None:
         boundary.boundary.plot(ax=ax, color="black", linewidth=1.1)
 
-    ax.set_title(title)
+    ax.set_facecolor(PLOT_BACKGROUND)
+    ax.set_title(title, fontsize=10, pad=8)
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     return im
@@ -317,6 +319,7 @@ def plot_real_case(
     lon_grid, lat_grid = np.meshgrid(lon, lat)
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
+    fig.patch.set_facecolor(PLOT_BACKGROUND)
     panels = [
         ("Observed accumulation", obs),
         ("Forecast accumulation", fcst),
@@ -356,14 +359,16 @@ def plot_real_case(
 
     fig.suptitle(
         (
-            f"{title}: displacement={result.pct_displacement:.1f}%, "
-            f"volume={result.pct_volume:.1f}%, pattern={result.pct_pattern:.1f}%"
+            f"{title}\n"
+            f"Error split: displacement {result.pct_displacement:.1f}% | "
+            f"volume {result.pct_volume:.1f}% | pattern {result.pct_pattern:.1f}%"
         ),
         fontsize=12,
+        linespacing=1.35,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=180)
+    fig.savefig(output_path, dpi=180, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -449,7 +454,7 @@ def run_model_case(
         lat=lat,
         lon=lon,
         threshold=threshold,
-        title=case,
+        title=str(model["label"]),
         output_path=plot_path,
         boundary=boundary,
     )
