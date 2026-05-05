@@ -6,6 +6,8 @@ bk_docs/
 bk*
 test_*.py
 
+.venv-momp
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
