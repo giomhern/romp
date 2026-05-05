@@ -102,6 +102,7 @@ def best_shift_by_mse(
     *,
     threshold: float,
     max_shift: int,
+    verification_mask: np.ndarray | None = None,
     dy_values: range | None = None,
     dx_values: range | None = None,
 ) -> tuple[int, int, np.ndarray, np.ndarray, float]:
@@ -118,6 +119,10 @@ def best_shift_by_mse(
 
     if obs.shape != fcst.shape:
         raise ValueError(f"obs and fcst must have the same shape, got {obs.shape} and {fcst.shape}")
+    if verification_mask is not None and verification_mask.shape != obs.shape:
+        raise ValueError(
+            f"verification_mask must have shape {obs.shape}, got {verification_mask.shape}"
+        )
 
     obs_mask = obs >= threshold
     fcst_mask = fcst >= threshold
@@ -133,7 +138,8 @@ def best_shift_by_mse(
             shifted = shift_field(fcst, dy, dx)
             shifted_mask = shifted >= threshold
             cra_mask = obs_mask | fcst_mask | shifted_mask
-            mse = masked_mse(shifted, obs, cra_mask)
+            score_mask = cra_mask if verification_mask is None else cra_mask & verification_mask
+            mse = masked_mse(shifted, obs, score_mask)
 
             if np.isnan(mse):
                 continue
@@ -156,6 +162,7 @@ def cra_decomposition(
     imposed_forecast_dy: float = np.nan,
     threshold: float = 1.0,
     max_shift: int = 80,
+    verification_mask: np.ndarray | None = None,
     dy_values: range | None = None,
     dx_values: range | None = None,
 ) -> tuple[CraResult, np.ndarray, np.ndarray]:
@@ -167,12 +174,18 @@ def cra_decomposition(
         fcst,
         threshold=threshold,
         max_shift=max_shift,
+        verification_mask=verification_mask,
         dy_values=dy_values,
         dx_values=dx_values,
     )
 
-    mse_total = masked_mse(fcst, obs, cra_mask)
-    valid_mask = cra_mask & np.isfinite(obs) & np.isfinite(shifted)
+    original_cra_mask = (obs >= threshold) | (fcst >= threshold)
+    original_score_mask = (
+        original_cra_mask if verification_mask is None else original_cra_mask & verification_mask
+    )
+    shifted_score_mask = cra_mask if verification_mask is None else cra_mask & verification_mask
+    mse_total = masked_mse(fcst, obs, original_score_mask)
+    valid_mask = shifted_score_mask & np.isfinite(obs) & np.isfinite(shifted)
     mean_obs = float(np.nanmean(obs[valid_mask]))
     mean_fcst_shifted = float(np.nanmean(shifted[valid_mask]))
 
