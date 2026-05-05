@@ -9,7 +9,7 @@ and observed rainfall fields:
 2. Accumulate forecast rainfall over lead days 1-15 for one common initialization.
 3. Accumulate observed rainfall over the matching valid dates.
 4. Run CRA-style displacement/error decomposition.
-5. Save a CSV summary and one diagnostic figure per model.
+5. Save a CSV summary and diagnostic figures per model.
 
 Run from the repo root:
     python demo/cra/demo_real_rainfall_cra.py
@@ -28,10 +28,12 @@ DEMO_DIR = Path(__file__).resolve().parents[1]
 ROOT_DATA_DIR = REPO_ROOT / "data"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 os.environ.setdefault("MPLCONFIGDIR", str(OUTPUT_DIR / ".mplconfig"))
+PLOT_BACKGROUND = "#fafafa"
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import shapely
 import xarray as xr
 import geopandas as gpd
 
@@ -213,6 +215,37 @@ def load_boundary(data_source: str) -> gpd.GeoDataFrame | None:
     return boundary
 
 
+def grid_mask_from_boundary(
+    lat: np.ndarray,
+    lon: np.ndarray,
+    boundary: gpd.GeoDataFrame | None,
+) -> np.ndarray | None:
+    """Return a boolean mask for grid-cell centers inside the plotted boundary."""
+    if boundary is None or boundary.empty:
+        return None
+
+    lon_grid, lat_grid = np.meshgrid(lon, lat)
+    if hasattr(boundary.geometry, "union_all"):
+        geometry = boundary.geometry.union_all()
+    else:
+        geometry = boundary.geometry.unary_union
+
+    return shapely.contains_xy(geometry, lon_grid, lat_grid)
+
+
+def mse_change_note(original_mse: float, shifted_mse: float) -> str:
+    """Describe whether the shifted forecast improved relative to the original."""
+    mse_delta = original_mse - shifted_mse
+    if np.isfinite(original_mse) and original_mse > 0 and np.isfinite(shifted_mse):
+        mse_change_pct = 100.0 * mse_delta / original_mse
+        if mse_delta > 0:
+            return f"improved {mse_change_pct:.1f}%"
+        if mse_delta < 0:
+            return f"worse {abs(mse_change_pct):.1f}%"
+        return "no MSE change"
+    return "MSE change n/a"
+
+
 def load_forecast_accumulation(
     path: Path,
     *,
@@ -277,6 +310,7 @@ def plot_map_panel(
     vmax: float,
     mask_panel: bool = False,
     boundary: gpd.GeoDataFrame | None = None,
+    draw_threshold_contour: bool = True,
 ) -> object:
     """Draw one map panel and its threshold contour."""
     if mask_panel:
@@ -284,13 +318,14 @@ def plot_map_panel(
     else:
         im = ax.pcolormesh(lon_grid, lat_grid, data, cmap=cmap, shading="nearest", vmin=vmin, vmax=vmax)
 
-    if np.nanmax(data) >= threshold and np.nanmin(data) < threshold:
+    if draw_threshold_contour and np.nanmax(data) >= threshold and np.nanmin(data) < threshold:
         ax.contour(lon_grid, lat_grid, data, levels=[threshold], colors="#7f1d1d", linewidths=0.9)
 
     if boundary is not None:
         boundary.boundary.plot(ax=ax, color="black", linewidth=1.1)
 
-    ax.set_title(title)
+    ax.set_facecolor(PLOT_BACKGROUND)
+    ax.set_title(title, fontsize=10, pad=8)
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     return im
@@ -309,14 +344,33 @@ def plot_real_case(
     title: str,
     output_path: Path,
     boundary: gpd.GeoDataFrame | None,
+    display_mse_original: float,
+    display_mse_shifted: float,
+    display_mse_label: str,
+    display_mask: np.ndarray | None = None,
+    draw_threshold_contours: bool = True,
 ) -> None:
     """Save a diagnostic plot for a real-data CRA case."""
-    vmax = float(np.nanpercentile(np.concatenate([obs.ravel(), fcst.ravel(), shifted.ravel()]), 98))
+    if display_mask is not None:
+        obs = np.where(display_mask, obs, np.nan)
+        fcst = np.where(display_mask, fcst, np.nan)
+        shifted = np.where(display_mask, shifted, np.nan)
+
+    finite_rain = np.concatenate(
+        [
+            obs[np.isfinite(obs)].ravel(),
+            fcst[np.isfinite(fcst)].ravel(),
+            shifted[np.isfinite(shifted)].ravel(),
+        ]
+    )
+    vmax = float(np.nanpercentile(finite_rain, 98)) if finite_rain.size else 1.0
     if not np.isfinite(vmax) or vmax <= 0:
         vmax = float(np.nanmax([np.nanmax(obs), np.nanmax(fcst), np.nanmax(shifted), 1.0]))
     lon_grid, lat_grid = np.meshgrid(lon, lat)
+    mse_note = mse_change_note(display_mse_original, display_mse_shifted)
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
+    fig.patch.set_facecolor(PLOT_BACKGROUND)
     panels = [
         ("Observed accumulation", obs),
         ("Forecast accumulation", fcst),
@@ -336,19 +390,29 @@ def plot_real_case(
             vmin=0,
             vmax=vmax,
             boundary=boundary,
+            draw_threshold_contour=draw_threshold_contours,
         )
         rain_im = im
 
+    annotation_style = {
+        "transform": None,
+        "va": "top",
+        "ha": "left",
+        "color": "black",
+        "fontsize": 9,
+        "bbox": {"facecolor": "white", "alpha": 0.7, "edgecolor": "none", "pad": 3},
+    }
     axes[1].text(
         0.03,
         0.97,
-        f"correction: dx={result.corrective_shift_dx}, dy={result.corrective_shift_dy}",
-        transform=axes[1].transAxes,
-        va="top",
-        ha="left",
-        color="black",
-        fontsize=9,
-        bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none", "pad": 3},
+        f"{display_mse_label}\nforecast MSE: {display_mse_original:.2f}",
+        **{**annotation_style, "transform": axes[1].transAxes},
+    )
+    axes[2].text(
+        0.03,
+        0.97,
+        f"{display_mse_label}\nshifted MSE: {display_mse_shifted:.2f}\n{mse_note}",
+        **{**annotation_style, "transform": axes[2].transAxes},
     )
 
     if rain_im is not None:
@@ -356,14 +420,16 @@ def plot_real_case(
 
     fig.suptitle(
         (
-            f"{title}: displacement={result.pct_displacement:.1f}%, "
-            f"volume={result.pct_volume:.1f}%, pattern={result.pct_pattern:.1f}%"
+            f"{title}\n"
+            f"Error split: displacement {result.pct_displacement:.1f}% | "
+            f"volume {result.pct_volume:.1f}% | pattern {result.pct_pattern:.1f}%"
         ),
         fontsize=12,
+        linespacing=1.35,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=180)
+    fig.savefig(output_path, dpi=180, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -410,6 +476,14 @@ def run_model_case(
             "with `*_2p0` model keys or `--obs-resolution 4p0` with `*_4p0` model keys."
         )
 
+    india_mask = grid_mask_from_boundary(lat, lon, boundary)
+    if india_mask is None:
+        verification_mask = None
+        display_mse_label = "CRA objective"
+    else:
+        verification_mask = india_mask
+        display_mse_label = "India CRA objective"
+
     case = f"{model['label']}_{year}_init{init_time:%Y%m%d}_lead{lead_start}-{lead_end}"
     result, shifted, cra_mask = cra_decomposition(
         case,
@@ -417,7 +491,10 @@ def run_model_case(
         fcst_accum,
         threshold=threshold,
         max_shift=max_shift,
+        verification_mask=verification_mask,
     )
+    display_mse_original = result.mse_total
+    display_mse_shifted = result.mse_shifted
 
     row = {
         "model": model["label"],
@@ -436,10 +513,14 @@ def run_model_case(
         "lead_end": lead_end,
         "threshold": threshold,
         "max_shift": max_shift,
+        "display_mse_region": display_mse_label,
+        "display_mse_original": display_mse_original,
+        "display_mse_shifted": display_mse_shifted,
         **asdict(result),
     }
 
     plot_path = output_dir / f"cra_real_rainfall_{model_key}_{year}.png"
+    india_plot_path = output_dir / f"cra_real_rainfall_{model_key}_{year}_india_only_no_outlines.png"
     plot_real_case(
         obs_accum,
         fcst_accum,
@@ -449,11 +530,33 @@ def run_model_case(
         lat=lat,
         lon=lon,
         threshold=threshold,
-        title=case,
+        title=str(model["label"]),
         output_path=plot_path,
         boundary=boundary,
+        display_mse_original=display_mse_original,
+        display_mse_shifted=display_mse_shifted,
+        display_mse_label=display_mse_label,
+    )
+    plot_real_case(
+        obs_accum,
+        fcst_accum,
+        shifted,
+        cra_mask,
+        result,
+        lat=lat,
+        lon=lon,
+        threshold=threshold,
+        title=f"{model['label']} India-only",
+        output_path=india_plot_path,
+        boundary=boundary,
+        display_mse_original=display_mse_original,
+        display_mse_shifted=display_mse_shifted,
+        display_mse_label=display_mse_label,
+        display_mask=india_mask,
+        draw_threshold_contours=False,
     )
     row["figure"] = str(plot_path.relative_to(REPO_ROOT))
+    row["figure_india_only_no_outlines"] = str(india_plot_path.relative_to(REPO_ROOT))
     return row
 
 
@@ -560,6 +663,9 @@ def main() -> None:
         "threshold",
         "corrective_shift_dx",
         "corrective_shift_dy",
+        "display_mse_region",
+        "display_mse_original",
+        "display_mse_shifted",
         "diagnosed_forecast_error_dx",
         "diagnosed_forecast_error_dy",
         "pct_displacement",
@@ -571,6 +677,9 @@ def main() -> None:
     print(f"\nSaved real-data CRA summary to: {summary_path}")
     print("Saved real-data CRA figures:")
     for figure in summary["figure"]:
+        print(f"  {REPO_ROOT / figure}")
+    print("Saved India-only CRA figures without object outlines:")
+    for figure in summary["figure_india_only_no_outlines"]:
         print(f"  {REPO_ROOT / figure}")
 
 
