@@ -1,18 +1,11 @@
 from dataclasses import asdict
 from itertools import product
 
-from momp.metrics.skill import create_score_results
-from momp.graphics.heatmap import create_heatmap
-from momp.graphics.reliability import plot_reliability_diagram
-from momp.graphics.panel_portrait_skill import panel_portrait_bss_auc
-from momp.graphics.panel_bar_skill import panel_bar_bss_rpss_auc
-from momp.io.output import save_score_results
 from momp.lib.control import iter_list, make_case
 from momp.lib.convention import Case
 #from momp.lib.loader import cfg, setting
 from momp.lib.loader import get_cfg, get_setting
 #from momp.io.output import set_nested
-from momp.app.ens_spatial_far_mr_mae import ens_spatial_far_mr_mae_map
 from momp.utils.printing import tuple_to_str
 from momp.io.dict import select_key_at_level
 from momp.lib.control import filter_bins_in_window
@@ -33,6 +26,9 @@ def skill_score_in_bins(cfg=cfg, setting=setting):
     #if not getattr(cfg, "probabilistic", False):
     if not cfg.probabilistic:
         return
+
+    from momp.io.output import save_score_results
+    from momp.metrics.skill import create_score_results
 
     #result_overall = {}
     #result_binned = {}
@@ -71,6 +67,7 @@ def skill_score_in_bins(cfg=cfg, setting=setting):
         print(f"\n\n\n skill score Execution time: {end - start:.4f} seconds\n\n\n")
         
         # save score results as csv file
+        binned_data, overall_scores = None, None
         if case_cfg['save_csv_score']:
             #save_score_results(score_results, **case_cfg)
             binned_data, overall_scores = save_score_results(score_results, **case_cfg)
@@ -82,11 +79,21 @@ def skill_score_in_bins(cfg=cfg, setting=setting):
 
         # heatmap plot
         if case_cfg['plot_heatmap_bss_auc']:
-            create_heatmap(score_results, **case_cfg)
+            try:
+                from momp.graphics.heatmap import create_heatmap
+
+                create_heatmap(score_results, **case_cfg)
+            except ModuleNotFoundError as exc:
+                print(f"Skipping heatmap plot because an optional graphics dependency is missing: {exc}")
 
         # reliability plot
         if case_cfg['plot_reliability']:
-            plot_reliability_diagram(score_results["forecast_obs_df"], **case_cfg)
+            try:
+                from momp.graphics.reliability import plot_reliability_diagram
+
+                plot_reliability_diagram(score_results["forecast_obs_df"], **case_cfg)
+            except ModuleNotFoundError as exc:
+                print(f"Skipping reliability plot because an optional graphics dependency is missing: {exc}")
 
 #    print("\n score_results \n ", score_results['skill_results']['bin_fair_brier_skill_scores'])
 #    print("\n binned_data \n", binned_data['Fair_Brier_Skill_Score'])
@@ -116,7 +123,12 @@ def skill_score_in_bins(cfg=cfg, setting=setting):
             result_binned_window = select_key_at_level(result_binned, 2, window_str)
             print("\n\n\n result_binned_window = ", result_binned_window)
             pprint(result_binned_window)
-            panel_portrait_bss_auc(result_binned_window, verification_window, **vars(cfg))
+            try:
+                from momp.graphics.panel_portrait_skill import panel_portrait_bss_auc
+
+                panel_portrait_bss_auc(result_binned_window, verification_window, **vars(cfg))
+            except ModuleNotFoundError as exc:
+                print(f"Skipping panel heatmap plot because an optional graphics dependency is missing: {exc}")
 
     # bar plot for BSS, RPSS, AUC in window
     if case_cfg['plot_bar_bss_rpss_auc']:
@@ -129,7 +141,12 @@ def skill_score_in_bins(cfg=cfg, setting=setting):
             result_overall_window = select_key_at_level(result_overall, 2, window_str)
             print("\n\n\n result_overall_window = ", result_overall_window)
             #pprint(result_overall_window)
-            panel_bar_bss_rpss_auc(result_overall_window, verification_window, **vars(cfg))
+            try:
+                from momp.graphics.panel_bar_skill import panel_bar_bss_rpss_auc
+
+                panel_bar_bss_rpss_auc(result_overall_window, verification_window, **vars(cfg))
+            except ModuleNotFoundError as exc:
+                print(f"Skipping bar plot because an optional graphics dependency is missing: {exc}")
 
 #    # make spatial metrics plot --note it works only for whole country region, not subregion
 #    if case_cfg['plot_spatial_far_mr_mae']:

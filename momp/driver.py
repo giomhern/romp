@@ -12,8 +12,12 @@ Usage:
 """
 
 import logging
+import os
 import sys
+import tempfile
 import traceback
+
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "momp_mplconfig"))
 
 # Local Package Imports
 #from momp.lib.loader import cfg, setting
@@ -63,15 +67,15 @@ def run_momp(cfg=cfg, setting=setting):
     try:
         if cfg.workflow in ("onset", "all"):
             from momp.app.bin_skill_score import skill_score_in_bins
-            from momp.app.spatial_far_mr_mae import spatial_far_mr_mae_map
 
-            # 1. Calculate and save Skill Scores in defined day bins
-            #logger.info("Calculating skill scores in bins...")
-            skill_score_in_bins()
+            if cfg.probabilistic:
+                # Calculate and save probabilistic skill scores in defined day bins.
+                skill_score_in_bins()
+            else:
+                from momp.app.spatial_far_mr_mae import spatial_far_mr_mae_map
 
-            # 2. Generate spatial metrics and maps
-            #logger.info("Generating spatial metric maps (FAR, MR, MAE)...")
-            spatial_far_mr_mae_map()
+                # Generate deterministic spatial metrics and maps.
+                spatial_far_mr_mae_map()
 
         if cfg.workflow in ("cra", "all"):
             from momp.app.cra_run import run_cra_workflow
