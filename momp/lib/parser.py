@@ -19,10 +19,46 @@ def create_parser(config, cli_args=None):
     #)
 
     parser.add_argument(
+        "--workflow",
+        choices=["onset", "cra", "all"],
+        default=config.get("workflow", "onset"),
+        help=f"Workflow to run from momp-run (default: {config.get('workflow', 'onset')})"
+    )
+
+    parser.add_argument(
         "--model_list",
         nargs="+",
         default=config["model_list"],
         help=f"Model list (default: {config['model_list']})"
+    )
+
+    parser.add_argument(
+        "--model_dir_list",
+        nargs="+",
+        default=config["model_dir_list"],
+        help=f"Model directories aligned with --model_list (default: {config['model_dir_list']})"
+    )
+
+    parser.add_argument(
+        "--model_var_list",
+        nargs="+",
+        default=config["model_var_list"],
+        help=f"Model rainfall variables aligned with --model_list (default: {config['model_var_list']})"
+    )
+
+    parser.add_argument(
+        "--unit_cvt_list",
+        nargs="+",
+        type=parse_optional_float,
+        default=config["unit_cvt_list"],
+        help=f"Model unit conversion factors aligned with --model_list (default: {config['unit_cvt_list']})"
+    )
+
+    parser.add_argument(
+        "--file_pattern_list",
+        nargs="+",
+        default=config["file_pattern_list"],
+        help=f"Model file patterns aligned with --model_list (default: {config['file_pattern_list']})"
     )
 
     parser.add_argument(
@@ -192,6 +228,90 @@ def create_parser(config, cli_args=None):
         help="region as defined in params.region_def (default: {config['region']})"
     )
 
+    parser.add_argument(
+        "--obs_dir",
+        type=str,
+        default=config['obs_dir'],
+        help=f"Observation NetCDF directory (default: {config['obs_dir']})"
+    )
+
+    parser.add_argument(
+        "--obs_file_pattern",
+        nargs="+",
+        default=config['obs_file_pattern'],
+        help=f"Observation file pattern; use {{}} or {{year}} for year (default: {config['obs_file_pattern']})"
+    )
+
+    parser.add_argument(
+        "--obs_var",
+        type=str,
+        default=config['obs_var'],
+        help=f"Observation rainfall variable (default: {config['obs_var']})"
+    )
+
+    parser.add_argument(
+        "--obs_unit_cvt",
+        type=parse_optional_float,
+        default=config['obs_unit_cvt'],
+        help=f"Observation unit conversion factor (default: {config['obs_unit_cvt']})"
+    )
+
+    parser.add_argument(
+        "--dir_out",
+        type=str,
+        default=config['dir_out'],
+        help=f"Output data directory (default: {config['dir_out']})"
+    )
+
+    parser.add_argument(
+        "--dir_fig",
+        type=str,
+        default=config['dir_fig'],
+        help=f"Output figure directory (default: {config['dir_fig']})"
+    )
+
+    parser.add_argument(
+        "--shpfile_dir",
+        type=parse_optional_str,
+        default=config['shpfile_dir'],
+        help=f"Optional shapefile path or directory for CRA region masking (default: {config['shpfile_dir']})"
+    )
+
+    parser.add_argument(
+        "--cra_threshold",
+        type=float,
+        default=config.get('cra_threshold', 20.0),
+        help=f"CRA accumulated rainfall threshold in mm (default: {config.get('cra_threshold', 20.0)})"
+    )
+
+    parser.add_argument(
+        "--cra_max_shift",
+        type=int,
+        default=config.get('cra_max_shift', 3),
+        help=f"CRA maximum grid-cell shift searched in each direction (default: {config.get('cra_max_shift', 3)})"
+    )
+
+    parser.add_argument(
+        "--cra_init_index",
+        type=int,
+        default=config.get('cra_init_index', 0),
+        help=f"Index into common model initialization dates when --cra_init_date is omitted (default: {config.get('cra_init_index', 0)})"
+    )
+
+    parser.add_argument(
+        "--cra_init_date",
+        type=parse_optional_str,
+        default=config.get('cra_init_date'),
+        help=f"Explicit CRA initialization date, e.g. 2015-06-06 (default: {config.get('cra_init_date')})"
+    )
+
+    parser.add_argument(
+        "--cra_save_fig",
+        type=str2bool,
+        default=config.get('cra_save_fig', True),
+        help=f"Save CRA diagnostic figures, True or False (default: {config.get('cra_save_fig', True)})"
+    )
+
 #    parser.add_argument(
 #        "--ensemble_list",
 #        nargs="+",
@@ -227,8 +347,18 @@ def create_parser(config, cli_args=None):
 
     # ---- Convert list → tuple if needed ----
     # Only convert if user supplied; default already tuple
-    if isinstance(args.model_list, list):
-        args.model_list = tuple(args.model_list)
+    tuple_keys = (
+        "model_list",
+        "model_dir_list",
+        "model_var_list",
+        "unit_cvt_list",
+        "file_pattern_list",
+        "obs_file_pattern",
+    )
+    for key in tuple_keys:
+        value = getattr(args, key, None)
+        if isinstance(value, list):
+            setattr(args, key, tuple(value))
 
 #    if isinstance(args.ensemble_list, list):
 #        args.ensemble_list = tuple(args.ensemble_list)
@@ -277,6 +407,22 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def parse_optional_str(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in ("none", "null"):
+        return None
+    return value
+
+
+def parse_optional_float(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in ("none", "null"):
+        return None
+    return float(value)
 
 
 # Takes a string like "(3, 5)" and turns it into a Python tuple (3, 5).
@@ -330,10 +476,11 @@ def ensure_config_exists(param_path: str) -> Path:
 #    return dst
 
     if param_path == "params/config.in":
-        # return a real path to the packaged file (read-only)
-#        print("WOWOWOWO")
+        source_tree_config = Path(__file__).resolve().parents[1] / "params" / "config.in"
+        if source_tree_config.exists():
+            return source_tree_config
+
         with resources.as_file(resources.files("momp").joinpath("params/config.in")) as p:
-#            print("NICE resolved")
             return Path(p)
 
     return Path(param_path).expanduser().resolve()
@@ -362,6 +509,3 @@ def ensure_config_exists(param_path: str) -> Path:
 #
 #    print(f"Parameter file {filename} not found")
 #    sys.exit(1)
-
-
-

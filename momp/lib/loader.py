@@ -228,10 +228,18 @@ def build_cfg(cli_args=None):
     cfg = dic.copy()
     args_dict = vars(args)
 
+    workflow_keys = {
+        "workflow",
+        "cra_threshold",
+        "cra_max_shift",
+        "cra_init_index",
+        "cra_init_date",
+        "cra_save_fig",
+    }
     overrides = {
         key: value
         for key, value in args_dict.items()
-        if key in cfg and value is not None
+        if (key in cfg or key in workflow_keys) and value is not None
     }
 
     cfg.update(overrides)
@@ -265,5 +273,4 @@ def get_setting(cli_args=None):
         #_setting = init_dataclass(Setting, cfg)
         _setting = init_dataclass(Setting, vars(cfg))
     return _setting
-
 

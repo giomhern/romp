@@ -15,6 +15,11 @@ pkg_dir = "~/Code/benchmarking/momp/" # package dir where the momp/ folder is
 # Frozen with major ROMP version
 layout = ("model", "verification_window")
 
+# Workflow to run from `momp-run`.
+# Use "onset" for the existing onset evaluation, "cra" for rainfall CRA verification,
+# or "all" to run both.
+workflow = "onset"
+
 # List of models to process (e.g., "AIFS", "IFS", "NGCM").
 # Must be models from the same category, e.g., all probabilistic models
 # for all parameter lists in config.in, keep the trailing comma if only one item
@@ -188,6 +193,13 @@ plot_climatology_onset = True                      # Spatial map of climatology 
 plot_panel_heatmap_error = True                    # panel heatmap of mae,mr,far 
 plot_panel_heatmap_skill = True                    # panel heatmap of skill score 
 plot_bar_bss_rpss_auc = True                    # bar plot of skill score 
+
+# --- CRA Rainfall Verification ---
+cra_threshold = 20.0      # accumulated rainfall threshold (mm) used to define CRAs
+cra_max_shift = 3         # maximum integer grid-cell shift searched in each direction
+cra_init_index = 10       # common initialization-date index used when cra_init_date is None
+cra_init_date = None      # explicit init date string, e.g., "2015-06-06"
+cra_save_fig = True       # save observed/forecast/shifted diagnostic CRA figures
 
 # interactive plot
 show_plot = False                                 # show individual model plot

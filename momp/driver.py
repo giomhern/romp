@@ -18,8 +18,6 @@ import traceback
 # Local Package Imports
 #from momp.lib.loader import cfg, setting
 from momp.lib.loader import get_cfg, get_setting
-from momp.app.bin_skill_score import skill_score_in_bins
-from momp.app.spatial_far_mr_mae import spatial_far_mr_mae_map
 from momp.utils.printing import print_momp_banner
 
 # Create a logs directory if it doesn't exist
@@ -63,13 +61,23 @@ def run_momp(cfg=cfg, setting=setting):
     logger.info("Starting ROMP Workflow...")
 
     try:
-        # 1. Calculate and save Skill Scores in defined day bins
-        #logger.info("Calculating skill scores in bins...")
-        skill_score_in_bins()
+        if cfg.workflow in ("onset", "all"):
+            from momp.app.bin_skill_score import skill_score_in_bins
+            from momp.app.spatial_far_mr_mae import spatial_far_mr_mae_map
 
-        # 2. Generate spatial metrics and maps
-        #logger.info("Generating spatial metric maps (FAR, MR, MAE)...")
-        spatial_far_mr_mae_map()
+            # 1. Calculate and save Skill Scores in defined day bins
+            #logger.info("Calculating skill scores in bins...")
+            skill_score_in_bins()
+
+            # 2. Generate spatial metrics and maps
+            #logger.info("Generating spatial metric maps (FAR, MR, MAE)...")
+            spatial_far_mr_mae_map()
+
+        if cfg.workflow in ("cra", "all"):
+            from momp.app.cra_run import run_cra_workflow
+
+            logger.info("Running CRA rainfall verification...")
+            run_cra_workflow(cfg, setting)
 
         logger.info("ROMP Workflow completed successfully!")
 
